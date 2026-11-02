@@ -3,7 +3,7 @@ import time
 
 # 로봇팔과 연결된 COM 포트
 robot = serial.Serial(
-    port="COM3",
+    port="COM4",
     baudrate=9600,
     timeout=1
 )

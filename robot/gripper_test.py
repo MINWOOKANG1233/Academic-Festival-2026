@@ -3,7 +3,7 @@ import serial
 import time
 
 # 로봇팔 설정
-PORT = "COM3"
+PORT = "COM4"
 BAUDRATE = 9600
 SERVO_ID = 1
 
@@ -73,8 +73,8 @@ with serial.Serial(PORT, BAUDRATE, timeout=2) as robot:
         print("위치를 읽지 못해 이동을 중단합니다.")
 
     else:
-        # 현재 위치에서 15만큼 이동
-        target = original + 50
+        # 현재 위치에서 200만큼 이동
+        target = original + 200
 
         if target > 950:
             print("목표 위치가 안전 테스트 범위를 벗어납니다.")

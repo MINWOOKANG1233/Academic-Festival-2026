@@ -3,7 +3,7 @@ import serial
 import time
 
 # 로봇팔 연결
-robot = serial.Serial("COM3", 9600, timeout=2)
+robot = serial.Serial("COM4", 9600, timeout=2)
 
 # ESP32가 통신을 준비할 시간
 time.sleep(2)
