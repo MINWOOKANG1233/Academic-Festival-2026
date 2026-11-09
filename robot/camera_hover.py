@@ -7,8 +7,9 @@ import math
 import time
 from contextlib import ExitStack
 
-from coordinate_pick import LeArmSerial, Point
+from coordinate_pick import LeArmSerial, Point, execute_stages
 from grid_hover import approach_from_home, grid_to_arm, require_hover_range, reset_observation_pose
+from object_pick import OBJECTS, PickSetup, gripper_open_position, plan_object_pick
 
 
 def read_detection(line: bytes) -> tuple[int, float, float] | None:
@@ -66,6 +67,14 @@ def main() -> None:
     parser.add_argument("--execute", action="store_true", help="인식 좌표를 확정한 후 실제 접근")
     parser.add_argument("--trim-forward-mm", type=int, default=0, help="실측 보정량. 양수는 팔에서 멀어지는 쪽")
     parser.add_argument("--trim-left-mm", type=int, default=0, help="실측 보정량. 양수는 격자 기준 왼쪽")
+    parser.add_argument("--object", choices=OBJECTS, help="고정 방향 집기 시험 물체")
+    parser.add_argument("--descent-mm", type=int, help="접근 자세에서 파지 높이까지 실측한 하강량")
+    parser.add_argument("--wrist-position", type=int, help="물체 방향과 맞춘 손목 서보값")
+    opening = parser.add_mutually_exclusive_group()
+    opening.add_argument("--open-position", type=int, help="측정한 열림에 해당하는 집게 서보값")
+    opening.add_argument("--open-angle-deg", type=int, help="Hiwonder claw_set 기준 열림 각도 0~90°")
+    parser.add_argument("--close-position", type=int, help="물체에 맞춰 확인한 닫힘 서보값")
+    parser.add_argument("--measured-opening-mm", type=float, help="열림 상태의 양쪽 집게 안쪽 실측 간격")
     args = parser.parse_args()
     if args.execute and not args.robot_port:
         parser.error("--execute에는 --robot-port가 필요합니다.")
@@ -73,6 +82,33 @@ def main() -> None:
         parser.error("카메라와 로봇팔은 서로 다른 포트를 사용해야 합니다.")
     if max(abs(args.trim_forward_mm), abs(args.trim_left_mm)) > 10:
         parser.error("한 번의 시험 보정량은 축마다 ±10 mm 이내여야 합니다.")
+
+    profile = OBJECTS.get(args.object)
+    setup = None
+    open_position = args.open_position
+    if args.open_angle_deg is not None:
+        try:
+            open_position = gripper_open_position(args.open_angle_deg)
+        except ValueError as error:
+            parser.error(str(error))
+    values = (args.descent_mm, args.wrist_position, open_position,
+              args.close_position, args.measured_opening_mm)
+    if profile is None and any(value is not None for value in values):
+        parser.error("집기 설정을 사용하려면 --object를 지정하세요.")
+    if profile is not None:
+        print(f"{profile.name} · 바닥 {profile.footprint_mm[0]}×{profile.footprint_mm[1]} mm"
+              f" · 높이 {profile.height_mm} mm · 파지 폭 {profile.grip_width_mm} mm")
+        print(profile.alignment)
+        if all(value is not None for value in values):
+            setup = PickSetup(*values)
+            try:
+                setup.validate(profile)
+            except ValueError as error:
+                parser.error(str(error))
+        elif args.execute:
+            parser.error("집기 실행에는 하강량, 손목·열기·닫기 서보값과 실측 열림 간격이 모두 필요합니다.")
+        else:
+            print("집기 설정이 아직 비어 있어 접근 좌표만 미리 봅니다.")
 
     import serial
 
@@ -84,6 +120,10 @@ def main() -> None:
             port.open()
             stack.callback(port.close)
             if args.execute:
+                if setup is not None and input(
+                    "물체 방향을 고정했고 초기화·접근 경로와 물체 위 공간이 비어 있으면 '실행': "
+                ).strip() != "실행":
+                    return
                 arm = LeArmSerial(args.robot_port, trace=True)
                 stack.callback(arm.close)
                 home = reset_observation_pose(arm)
@@ -95,8 +135,14 @@ def main() -> None:
             print(f"확정 격자 좌표 ({x_mm:.2f}, {y_mm:.2f}) mm → "
                   f"로봇 명령 ({target.x}, {target.y}, {target.z}) mm", flush=True)
             require_hover_range(target)
+            stages = plan_object_pick(target, profile, setup) if setup is not None else []
+            if stages:
+                for stage in stages:
+                    print(f"  {stage.label}")
             if args.execute:
                 approach_from_home(arm, target, home)
+                if stages:
+                    execute_stages(arm, stages)
     except (ValueError, OSError) as error:
         raise SystemExit(f"중단: {error}") from None
 
