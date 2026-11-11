@@ -49,26 +49,19 @@ Windows 노트북에서 시스템을 먼저 구현하고, 최종적으로 NVIDIA
 
 ## 5. 개발 진행 상황
 
-### 완료한 작업
+### 구현 현황 (2026-11-11)
 
-- [x] LeArm AI 조립 및 전원 연결
-- [x] PC 제어 프로그램을 통한 관절 제어
-- [x] Python과 ESP32 시리얼 통신
-- [x] Python으로 서보모터 위치 읽기
-- [x] Python으로 집게 이동 테스트
-- [x] GitHub 공동 개발 저장소 생성
+- [x] Windows에서 USB 시리얼로 LeArm 제어 및 서보 위치 읽기
+- [x] WonderMV 카메라의 전경 검출과 USB 좌표·사진 전송
+- [x] 카메라 검출 좌표를 로봇팔 작업면 좌표로 변환
+- [x] Windows 제어 화면에서 물체 선택, 사진 확인, 단계별·연속 집기 실행
+- [x] 큐브 파지·들어 올리기 실물 시험 1회 확인
+- [x] 장비 없이 실행하는 자동 테스트 31개 통과
+- [ ] 이클립스 통·휴지심의 실물 파지와 위치별 반복 성공률 검증
+- [ ] 물체 종류 자동 판별, 분류함 배치 및 연속 분류 시험
+- [ ] Jetson 이식과 성능 평가
 
-### 개발 예정
-
-- [ ] 6축 로봇팔 제어 모듈 정리
-- [ ] 물체별 Pick & Place 구현
-- [ ] 카메라 설치 및 OpenCV 영상처리
-- [ ] 카메라-로봇팔 좌표 보정
-- [ ] YOLO 객체 인식 모델 학습
-- [ ] 객체 인식과 로봇팔 제어 통합
-- [ ] 생활용품 3종 자동 분류
-- [ ] Jetson 환경 이식
-- [ ] 성능 평가 및 결과 분석
+Windows 시연은 물체를 직접 선택한 뒤 접근, 정렬, 파지, 상승까지 실행합니다. 설치와 실행 절차는 [Windows LeArm 시연 안내](DEMO.md)를 참고하세요.
 
 ## 6. 프로젝트 일정
 
@@ -96,13 +89,13 @@ Windows 노트북에서 시스템을 먼저 구현하고, 최종적으로 NVIDIA
 
 ## 8. 프로젝트 파일 구성
 
-현재 구현된 코드:
-
-- `robot_test.py` — 시리얼 포트 검색
-- `robot_control.py` — 서보모터 위치 읽기
-- `gripper_test.py` — 집게 이동 테스트
-
-추후 `robot/`, `vision/`, `calibration/`, `jetson/`, `experiments/`, `docs/` 폴더로 기능별 코드를 정리할 예정입니다.
+| 위치 | 역할 |
+|---|---|
+| `start_cube_control.cmd` | Windows 시연 실행 |
+| `robot/` | 제어 화면, 집기 계획, 역기구학, 시리얼 통신 |
+| `vision/` | WonderMV 전경 검출과 USB 출력 |
+| `robot/tests/` | 장비 없이 실행하는 자동 테스트 |
+| [DEMO.md](DEMO.md) | 설치, COM 포트 설정, 파일별 용도 |
 
 ## 9. 협업 및 개발 규칙
 
@@ -121,7 +114,3 @@ Windows 노트북에서 시스템을 먼저 구현하고, 최종적으로 NVIDIA
 ---
 
 **CareArm Team | Sejong University | 2026 Academic Festival**
-
-## Windows 시연
-
-[시연 실행 방법과 파일별 역할](DEMO.md)
