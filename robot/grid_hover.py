@@ -5,10 +5,11 @@ import argparse
 import math
 import time
 
-from coordinate_pick import LeArmSerial, Point, deltas, packet
+from coordinate_pick import LeArmSerial, Point, deltas, gripper, packet
 
 
 HOME = Point(150, 0, 20)
+HOME_OPEN_POSITION = 200
 # Base ID 6 is nominally 500 at straight ahead. Observed resets settle on
 # either side of that value depending on the direction of approach.
 HOME_SERVOS = (222, 497, 180, 127, 413, 500)
@@ -37,13 +38,19 @@ def reset_observation_pose(arm: LeArmSerial) -> dict[int, int]:
     arm.write(packet(12))
     time.sleep(3)
     positions = arm.read_positions()
-    if any(abs(positions[i] - value) > 10 for i, value in enumerate(HOME_SERVOS, 1)):
+    if any(abs(positions[i] - HOME_SERVOS[i - 1]) > 10 for i in range(2, 7)):
         raise OSError(f"초기 관절 자세가 예상 범위를 벗어났습니다: {positions}")
+    arm.write(gripper(HOME_OPEN_POSITION, duration_ms=1200))
+    time.sleep(1.5)
+    positions = arm.read_positions()
+    if abs(positions[1] - HOME_OPEN_POSITION) > 15:
+        raise OSError(f"초기 자세의 집게 열림을 확인하지 못했습니다: {positions[1]}")
     return positions
 
 
-def approach_from_home(arm: LeArmSerial, target: Point, positions: dict[int, int]) -> None:
+def approach_from_home(arm: LeArmSerial, target: Point, positions: dict[int, int], *, report=print) -> None:
     require_hover_range(target)
+    report("물체 위로 접근 중")
     for command in deltas(HOME, target, step_mm=25):
         arm.write(command)
         time.sleep(1.5)
@@ -51,8 +58,8 @@ def approach_from_home(arm: LeArmSerial, target: Point, positions: dict[int, int
         if max(abs(current[i] - positions[i]) for i in (3, 4, 5, 6)) <= 2:
             raise OSError("이동 확인 불가: 관절 응답 변화가 작습니다. 남은 명령을 중단했습니다.")
         positions = current
-    print("이동 후 관절값:", positions)
-    print("집게 끝이 목표 위에 왔는지 확인하세요.")
+        report(f"접근 중 관절값: {positions}")
+    report("집게 끝이 목표 위에 왔는지 확인하세요.")
 
 
 def execute_hover(port: str, x_mm: float, y_mm: float) -> None:

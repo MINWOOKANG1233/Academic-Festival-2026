@@ -5,6 +5,7 @@ import time
 import lcd
 import ujson
 import gc
+import ubinascii
 
 # Use "red" to restore the original LAB detector.
 DETECTION_MODE = "foreground"
@@ -18,6 +19,7 @@ MIN_PIXELS = 150
 MIN_AREA = 150
 OUTPUT_ENABLED = True  # Enable JSON output.
 USB_C_OUTPUT_ENABLED = True  # False keeps the JSON in the CanMV IDE terminal.
+USB_JPEG_OUTPUT_ENABLED = True  # Raw photo for the stopped-pose check in the PC app.
 UART_OUTPUT_ENABLED = False  # Enable when sending JSON through WonderMV's external UART.
 OUTPUT_INTERVAL_MS = 1000
 
@@ -63,16 +65,19 @@ def foreground_target(img, background):
         [DIFFERENCE_LAB], roi=GRID_ROI, pixels_threshold=MIN_PIXELS,
         area_threshold=MIN_AREA, merge=False,
     )
+    if not blobs:
+        return None, "NO BLOB"
     if len(blobs) != 1:
-        return None
+        return None, "MULTIPLE BLOBS"
     blob = blobs[0]
     x, y, w, h = blob.rect()
     left, top, width, height = GRID_ROI
     # Reject a clipped silhouette or a change that covers much of the scene.
-    if (x <= left or y <= top or x + w >= left + width or y + h >= top + height
-            or w * h > width * height // 4):
-        return None
-    return blob
+    if x <= left or y <= top or x + w >= left + width or y + h >= top + height:
+        return None, "AT ROI EDGE"
+    if w * h > width * height // 4:
+        return None, "BLOB TOO LARGE"
+    return blob, "OK"
 
 
 lcd.init()
@@ -111,17 +116,31 @@ gc.collect()
 while True:
     clock.tick()
     img = sensor.snapshot()
+    request = (usb.read() or b"") if usb is not None and usb.any() else b""
+    if b"P" in request:
+        usb.write(b"LEARM CAMERA READY\n")
+    if b"B" in request:
+        background = img.copy()
+        data["method"] = "background_difference"
+        data["class"] = "foreground_object"
+        usb.write(b"BACKGROUND OK\n")
     frame_id += 1
+    output_due = time.ticks_diff(time.ticks_ms(), last_output) >= OUTPUT_INTERVAL_MS
+    raw_jpeg = None
+    if output_due and usb is not None and USB_JPEG_OUTPUT_ENABLED:
+        raw_jpeg = bytes(img.compressed(quality=45).to_bytes())
     if background is not None:
-        target = foreground_target(img, background)
+        target, status = foreground_target(img, background)
     else:
         blobs = img.find_blobs(
             [RED_LAB], pixels_threshold=MIN_PIXELS,
             area_threshold=MIN_AREA, merge=False
         )
         target = max(blobs, key=lambda blob: blob.pixels()) if blobs else None
+        status = "OK" if target is not None else "NO RED TARGET"
     data["frame"] = frame_id
     data["found"] = target is not None
+    data["status"] = status
     data["cx"] = None
     data["cy"] = None
     data["x_mm"] = None
@@ -144,9 +163,9 @@ while True:
             )
             img.draw_string(0, 14, "mm X=%.1f Y=%.1f" % (x_mm, y_mm), color=(0, 255, 0))
     else:
-        img.draw_string(0, 0, "NO SINGLE TARGET", color=(255, 255, 255))
+        img.draw_string(0, 0, status, color=(255, 255, 255))
     lcd.display(img)
-    if time.ticks_diff(time.ticks_ms(), last_output) >= OUTPUT_INTERVAL_MS:
+    if output_due:
         if OUTPUT_ENABLED or uart is not None:
             message = ujson.dumps(data)
             if OUTPUT_ENABLED:
@@ -154,6 +173,8 @@ while True:
                     print(message)
                 else:
                     usb.write((message + "\n").encode())
+                    if raw_jpeg is not None:
+                        usb.write(b"JPEG " + ubinascii.b2a_base64(raw_jpeg).rstrip() + b"\n")
             if uart is not None:
                 uart.send_bytearray(list((message + "\n").encode()))
         gc.collect()

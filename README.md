@@ -121,3 +121,7 @@ Windows 노트북에서 시스템을 먼저 구현하고, 최종적으로 NVIDIA
 ---
 
 **CareArm Team | Sejong University | 2026 Academic Festival**
+
+## Windows 시연
+
+[시연 실행 방법과 파일별 역할](DEMO.md)
