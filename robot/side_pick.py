@@ -31,6 +31,10 @@ class Step(Enum):
     STOPPED = auto()
 
 
+class AlignmentPathError(ValueError):
+    """No joint path for the requested alignment move."""
+
+
 class CameraStream:
     """Read USB camera lines in chunks while preserving the serial reader interface."""
 
@@ -307,29 +311,70 @@ class SidePick:
         self.move_tool(goal, plan)
         self.surface_z = high.z - measured_height
         self.high_pose = return_pose
+        self.grasp_pose = self.pose
         self.alignment_history = []
         self.jog_total = (0, 0, 0)
         jpeg = self.snapshot("align")
         self.step = Step.ALIGN
         return jpeg
 
-    def jog(self, x, y, z, *, settle_yaw=False, forward_limit=15, along_target=False):
+    def jog(self, x, y, z, *, settle_yaw=False, forward_limit=15, along_target=False, back_limit=15):
         self.require_step(Step.LOWER, Step.ALIGN)
         if not 0 < max(abs(x), abs(y), abs(z)) <= 10 or sum(v != 0 for v in (x, y, z)) != 1:
             raise ValueError("한 번에 한 축을 1~10 mm 움직일 수 있어요.")
         total = tuple(a + b for a, b in zip(self.jog_total, (x, y, z)))
-        if not -15 <= total[0] <= forward_limit or any(abs(value) > 15 for value in total[1:]):
+        if (x and not -back_limit <= total[0] <= forward_limit) or abs(total[2]) > 15:
             raise ValueError("정렬 누적 이동 한계를 넘었어요.")
         if self.step is Step.LOWER and z:
             raise ValueError("첫 사진에서는 앞뒤·좌우만 보정하세요.")
-        if self.step is Step.ALIGN and not 5 <= self.pose.z + z - self.surface_z <= self.profile.height_mm - 3:
-            raise ValueError("미세 이동 후 접촉면이 물체 옆면의 시험 높이를 벗어나요.")
         previous = self.pose
         dx, dy = (x * self.direction[0], x * self.direction[1]) if along_target else (x, 0)
-        self.move_tool(replace(previous, x=previous.x + dx, y=previous.y + y + dy, z=previous.z + z),
-                       settle_yaw=bool(y) and (self.fast or settle_yaw))
+        reference = self.grasp_pose if (x or y) and self.step is Step.ALIGN else previous
+        goal = replace(previous, x=previous.x + dx, y=previous.y + y + dy,
+                       z=reference.z + z, pitch=reference.pitch)
+        if self.step is Step.ALIGN and not 5 <= goal.z - self.surface_z <= self.profile.height_mm - 3:
+            raise ValueError("미세 이동 후 접촉면이 물체 옆면의 시험 높이를 벗어나요.")
+        plan = None
+        if self.step is Step.ALIGN and (y or (along_target and x > 0)):
+            for tilt in (0, -3, 3, -6, 6, -10, 10, -15, 15):
+                candidate = replace(goal, pitch=goal.pitch + tilt)
+                if tilt and not -70 <= candidate.pitch <= -30:
+                    continue
+                try:
+                    plan = plan_tool_move(previous, candidate)
+                except ValueError:
+                    continue
+                goal = candidate
+                if tilt:
+                    self.report(f"파지 높이 보정 경로 · 집게 기울기 {goal.pitch:.1f}°")
+                break
+            else:
+                raise AlignmentPathError("집게 기울기를 바꿔도 파지 높이의 보정 경로를 찾지 못했어요.")
+        if self.step is Step.LOWER:
+            for tilt in (0, -3, -6, -10, -15, 3, 6, 10):
+                candidate = replace(goal, pitch=goal.pitch + tilt)
+                if not -70 <= candidate.pitch <= -30:
+                    continue
+                try:
+                    plan = plan_tool_move(previous, candidate)
+                except ValueError:
+                    continue
+                goal = candidate
+                if tilt:
+                    self.report(f"높은 접근 보정 · 집게 기울기 {goal.pitch:.1f}°")
+                break
+            else:
+                raise ValueError("높은 접근 보정에서 기울기를 바꿔도 실행할 관절 경로를 찾지 못했어요.")
+        self.move_tool(goal, plan, settle_yaw=bool(y) and (self.fast or settle_yaw))
         if self.step is Step.ALIGN:
             self.alignment_history.append(previous)
+            if y or (along_target and x > 0):
+                self.grasp_pose = replace(self.grasp_pose, pitch=goal.pitch)
+        if y and self.step is Step.LOWER:
+            self.pose = pose_from_joints(self.joints)
+            measured_y = self.pose.y - previous.y
+            self.report(f"높은 자세 좌우 요청 {y:+d} mm · 관절 응답 기준 {measured_y:+.1f} mm")
+            total = (total[0], self.jog_total[1] + measured_y, total[2])
         self.jog_total = total
         return self.snapshot("approach" if self.step is Step.LOWER else "align")
 
@@ -341,12 +386,7 @@ class SidePick:
         x, y = self.direction
         self.aligned_pose = self.pose
         goal = replace(self.pose, x=self.pose.x + distance * x, y=self.pose.y + distance * y)
-        # Check the lift and exit before advancing near the object.
-        lift = replace(goal, z=goal.z + 10)
-        plan_tool_move(goal, lift)
-        plan_tool_move(lift, goal)
-        plan_tool_move(goal, self.aligned_pose)
-        self.exit_plan()
+        self.plan_pick_exit(goal)
         if distance:
             self.progress("열린 집게로 전진")
             self.move_tool(goal)
@@ -369,25 +409,47 @@ class SidePick:
         self.require_step(Step.LIFT)
         self.progress("물체 들어 올리기")
         self.contact_pose = self.pose
-        self.move_tool(replace(self.pose, z=self.pose.z + 10))
+        self.move_tool(self.lift_pose)
         self.step = Step.RELEASE
 
     def release(self):
         self.require_step(Step.RELEASE)
         self.progress("물체 내려놓기 · 후퇴 경로 확인")
-        retreat = self.aligned_pose
         drop_plan = plan_tool_move(self.pose, self.contact_pose)
-        retreat_plan = plan_tool_move(self.contact_pose, retreat)
-        exit_plan = self.exit_plan()
+        exit_plan = self.open_exit_path
         self.move_tool(self.contact_pose, drop_plan)
         actual = self.send(gripper(200, 1500), 1.8)
         if abs(actual[1] - 200) > 15:
             raise OSError("집게 열림을 확인하지 못했어요. 후퇴를 중단했어요.")
         self.progress("열린 집게로 후퇴")
-        self.move_tool(retreat, retreat_plan)
         for goal, plan in exit_plan:
             self.move_tool(goal, plan)
         self.step = Step.RETURN
+
+    def plan_pick_exit(self, contact):
+        dx, dy = self.direction
+        for pull in (0, 5, 10, 15, 20):
+            lift = replace(contact, x=contact.x-pull*dx, y=contact.y-pull*dy, z=contact.z+10)
+            stage = "상승"
+            try:
+                lift_plan = plan_tool_move(contact, lift)
+                stage = "내려놓기"
+                plan_tool_move(lift, contact)
+                stage = "열린 집게 후퇴"
+                try:
+                    path = [(self.aligned_pose, plan_tool_move(contact, self.aligned_pose)), *self.exit_plan()]
+                except ValueError:
+                    if not pull:
+                        raise
+                    path = [(lift, lift_plan), (self.high_pose, plan_tool_move(lift, self.high_pose))]
+            except ValueError as error:
+                self.report(f"팔 쪽 {pull} mm 상승 후보 · {stage} 경로 실패 · {error}")
+                continue
+            self.lift_pose = lift
+            self.open_exit_path = path
+            self.report(f"파지 경로 확인 · 10 mm 상승 · 팔 쪽 {pull} mm")
+            return
+        raise ValueError(f"파지 경로를 찾지 못했어요. 마지막 실패 구간 · {stage}")
 
     def exit_plan(self):
         start = self.aligned_pose

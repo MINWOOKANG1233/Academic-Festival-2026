@@ -38,8 +38,18 @@ def reset_observation_pose(arm: LeArmSerial) -> dict[int, int]:
     arm.write(packet(12))
     time.sleep(3)
     positions = arm.read_positions()
-    if any(abs(positions[i] - HOME_SERVOS[i - 1]) > 10 for i in range(2, 7)):
-        raise OSError(f"초기 관절 자세가 예상 범위를 벗어났습니다: {positions}")
+    for retry_wait in (0.7, 3, 0.7):
+        outside = [i for i in range(2, 7) if abs(positions[i] - HOME_SERVOS[i - 1]) > 10]
+        if not outside:
+            break
+        if retry_wait == 3:
+            arm.write(packet(12))
+        time.sleep(retry_wait)
+        positions = arm.read_positions()
+    outside = [i for i in range(2, 7) if abs(positions[i] - HOME_SERVOS[i - 1]) > 10]
+    if outside:
+        details = ", ".join(f"{i}번 목표 {HOME_SERVOS[i - 1]} ±10 / 실제 {positions[i]}" for i in outside)
+        raise OSError(f"초기화 재시도 후에도 관절이 범위를 벗어났어요 · {details}")
     arm.write(gripper(HOME_OPEN_POSITION, duration_ms=1200))
     time.sleep(1.5)
     positions = arm.read_positions()

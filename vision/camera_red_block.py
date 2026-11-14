@@ -11,7 +11,7 @@ import ubinascii
 DETECTION_MODE = "foreground"
 # Start the foreground detector with the tray empty.
 BACKGROUND_DELAY_MS = 3000
-GRID_ROI = (14, 35, 291, 192)
+GRID_ROI = (0, 0, 320, 240)
 # Threshold the brightness of the RGB difference, regardless of its hue.
 DIFFERENCE_LAB = (12, 100, -128, 127, -128, 127)
 RED_LAB = (20, 100, 20, 127, 10, 127)
@@ -59,7 +59,7 @@ def pixel_to_mm(cx, cy):
     )
 
 
-def foreground_target(img, background):
+def foreground_target(img, background, original=None):
     img.difference(background)
     blobs = img.find_blobs(
         [DIFFERENCE_LAB], roi=GRID_ROI, pixels_threshold=MIN_PIXELS,
@@ -67,8 +67,9 @@ def foreground_target(img, background):
     )
     if not blobs:
         return None, "NO BLOB"
-    if len(blobs) != 1:
-        return None, "MULTIPLE BLOBS"
+    blobs = sorted(blobs, key=lambda candidate: candidate.pixels(), reverse=True)
+    if len(blobs) > 1 and sum(candidate.pixels() for candidate in blobs[1:]) * 4 >= blobs[0].pixels():
+        return None, "MULTIPLE BLOBS (%s px)" % ", ".join(str(candidate.pixels()) for candidate in blobs[:4])
     blob = blobs[0]
     x, y, w, h = blob.rect()
     left, top, width, height = GRID_ROI
@@ -76,7 +77,21 @@ def foreground_target(img, background):
     if x <= left or y <= top or x + w >= left + width or y + h >= top + height:
         return None, "AT ROI EDGE"
     if w * h > width * height // 4:
-        return None, "BLOB TOO LARGE"
+        if original is not None:
+            bright = original.find_blobs(
+                [(72, 100, -20, 20, -25, 25)], roi=(x, y, w, h),
+                pixels_threshold=450, area_threshold=800, merge=False,
+            )
+            if len(bright) == 1:
+                candidate = bright[0]
+                bx, by, bw, bh = candidate.rect()
+                if (bx > x and by > y and bx+bw < x+w and by+bh < y+h
+                        and 20 <= bw <= 110 and 30 <= bh <= 150
+                        and candidate.pixels() * 2 >= bw * bh):
+                    return candidate, "OK BRIGHT FOREGROUND"
+        return None, "BLOB TOO LARGE · box=%dx%d at (%d,%d), changed=%d px, limit=%d px2" % (
+            w, h, x, y, blob.pixels(), width * height // 4
+        )
     return blob, "OK"
 
 
@@ -130,7 +145,7 @@ while True:
     if output_due and usb is not None and USB_JPEG_OUTPUT_ENABLED:
         raw_jpeg = bytes(img.compressed(quality=45).to_bytes())
     if background is not None:
-        target, status = foreground_target(img, background)
+        target, status = foreground_target(img, background, img.copy() if output_due else None)
     else:
         blobs = img.find_blobs(
             [RED_LAB], pixels_threshold=MIN_PIXELS,

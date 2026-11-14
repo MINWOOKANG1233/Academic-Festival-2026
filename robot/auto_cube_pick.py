@@ -21,7 +21,10 @@ def cube_view(jpeg, *, allow_bottom_crop=False):
     with Image.open(BytesIO(jpeg)) as frame:
         rgb = frame.convert("RGB")
         pixels = [(x, y) for y in range(240) for x in range(320)
-                  if (lambda r, g, b: r-g > 32 and b-g > 12)(*rgb.getpixel((x, y)))]
+                  if (lambda r, g, b: (
+                      r-g > 32 and (b-g > 12 or r-b > 20 or allow_bottom_crop)
+                      or allow_bottom_crop and r >= 170 and r-g >= 14 and r-b >= 7
+                  ))(*rgb.getpixel((x, y)))]
     points = [(x, y) for x, y in pixels if 65 <= x <= 255]
     bottom_crop = (allow_bottom_crop and len(points) >= 600
                    and sum(y >= 236 for _, y in points) >= 20
@@ -41,16 +44,19 @@ def cube_view(jpeg, *, allow_bottom_crop=False):
         for x in columns:
             for y in range(240):
                 r, g, b = rgb.getpixel((x, y))
-                if r > 150 and r-g > 22 and b-g > 8:
+                if r > 150 and r-g > 15 and b-g > 4:
                     edges.append(y)
                     break
         return edges
 
     left_edge = bright_top(-22)
     right_edge = bright_top(12)
-    if len(left_edge) < 4 or len(right_edge) < 4:
+    if allow_bottom_crop or len(left_edge) < 4 or len(right_edge) < 4:
         tops = {}
+        mask = set(points)
         for x, y in points:
+            if allow_bottom_crop and not all((x, y + dy) in mask for dy in range(8)):
+                continue
             tops[x] = min(y, tops.get(x, y))
 
         def color_top(start):
@@ -59,9 +65,14 @@ def cube_view(jpeg, *, allow_bottom_crop=False):
                     if x in tops]
 
         left_edge, right_edge = color_top(-22), color_top(12)
+        if allow_bottom_crop and tops:
+            columns = sorted(tops)
+            fifth = max(1, len(columns) // 5)
+            left_edge = [tops[x] for x in columns[fifth:2*fifth]]
+            right_edge = [tops[x] for x in columns[-2*fifth:-fifth]]
     if len(left_edge) < 4 or len(right_edge) < 4:
         raise ValueError("큐브 윗변을 충분히 확인하지 못했어요.")
-    if abs(median(left_edge)-median(right_edge)) > 15:
+    if abs(median(left_edge)-median(right_edge)) > (23 if allow_bottom_crop else 18):
         raise ValueError("큐브의 변이 집게 방향과 비스듬해 자동 파지를 중단했어요.")
     return center, min(y for _, y in points)
 
@@ -72,7 +83,7 @@ def align_cube(cycle, jpeg, *, high):
     top_min, top_max = (125, 225) if high else (45, 115)
     tolerance = 12 if high else 7
     scale = 1.5 if high else PIXELS_PER_MM
-    max_moves = 3
+    max_moves = 5 if high else 3
     total = 0
     previous_error = None
     previous_delta = None
@@ -108,7 +119,8 @@ def align_cube(cycle, jpeg, *, high):
         if attempt == max_moves or stalled >= 2:
             raise ValueError(f"{phase}에서 재촬영해도 좌우 정렬이 확인되지 않았어요.")
         delta = max(-10, min(10, round(-error / scale)))
-        delta = max(-15-total, min(15-total, delta))
+        if not high:
+            delta = max(-15-total, min(15-total, delta))
         if not delta:
             raise ValueError(f"{phase}에서 자동 좌우 보정 한계에 도달했어요.")
         total += delta

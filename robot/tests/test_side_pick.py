@@ -79,7 +79,7 @@ class SidePickTests(unittest.TestCase):
     def test_eclipse_aligns_then_advances_at_observed_clearance(self):
         machine = Mock(profile=OBJECTS["eclipse"], jog_total=(0, 0, 0))
         with patch("demo_pick.photo_position", side_effect=[
-            (130, 105), (134, 105), (134, 124), (134, 137),
+            (130, 105), (154, 105), (154, 124), (154, 137),
         ]), patch("demo_pick.align_demo_object", return_value=b"aligned") as lateral:
             align_demo_depth(machine, b"observed")
         lateral.assert_called_once_with(machine, b"observed", require_clearance=True)
@@ -211,7 +211,7 @@ class SidePickTests(unittest.TestCase):
         cycle = SidePick(Camera(), arm, OBJECTS["cube"], report=lambda _: None,
                          on_photo=lambda *_: None, cancelled=lambda: False)
         cycle.home()
-        with patch("demo_pick.align_cube"), patch("demo_pick.photo_position", return_value=(151, 136)):
+        with patch("demo_pick.cube_view"), patch("demo_pick.align_cube"), patch("demo_pick.photo_position", return_value=(151, 136)):
             run_demo(cycle)
         self.assertIs(cycle.step, Step.DETECT)
         self.assertEqual(arm.joints[1], 200)
@@ -258,7 +258,10 @@ class SidePickTests(unittest.TestCase):
                                  on_photo=lambda *_: None, cancelled=lambda: False)
                 cycle.home()
                 cycle.detect(0, 0)
-                prepare_demo_pick(cycle)
+                with patch("demo_pick.photo_center", return_value=142), patch(
+                    "demo_pick.photo_position", return_value=(161 if key == "eclipse" else 142, 172)
+                ):
+                    prepare_demo_pick(cycle)
                 self.assertIs(cycle.step, Step.ALIGN)
                 self.assertAlmostEqual(cycle.pose.z - cycle.surface_z, height)
                 writes = len(arm.writes)
@@ -305,7 +308,7 @@ class SidePickTests(unittest.TestCase):
         machine = Mock()
         with patch("auto_cube_pick.cube_view", side_effect=[(178.5, 158), (160, 160), (153, 160)]):
             align_cube(machine, b"first frame", high=True)
-        self.assertEqual([call.args for call in machine.jog.call_args_list], [(0, -10, 0), (0, -5, 0)])
+        self.assertEqual([call.args for call in machine.jog.call_args_list], [(0, -10, 0), (0, -8, 0)])
         machine.lower.assert_not_called()
 
     def test_rotated_cube_blocks_automatic_alignment(self):

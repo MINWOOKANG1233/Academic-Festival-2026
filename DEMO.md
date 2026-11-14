@@ -15,8 +15,8 @@ WonderMV 카메라로 물체의 위치를 찾고 LeArm으로 접근, 정렬, 파
 | --- | --- |
 | `start_cube_control.cmd`, `robot/cube_control.pyw` | Windows 실행 파일과 제어 화면. COM 포트, 물체 선택, 사진 미리보기와 동작 버튼을 관리합니다. |
 | `vision/camera_red_block.py` | WonderMV에서 전경을 검출하고 위치 JSON과 JPEG를 USB로 보냅니다. |
-| `robot/demo_pick.py`, `robot/auto_cube_pick.py` | 사진으로 집기 위치를 보정하고 접근, 정렬, 하강, 파지, 상승을 계획합니다. |
-| `robot/side_pick.py`, `robot/level_kinematics.py` | 카메라 수신과 집기 단계 진행을 관리하고 집게의 목표 위치·자세를 관절 명령으로 변환합니다. |
+| `robot/demo_pick.py`, `robot/auto_cube_pick.py` | 물체별 사진 검출 결과로 위치를 보정하고 접근, 정렬, 하강, 파지, 상승을 계획합니다. |
+| `robot/side_pick.py`, `robot/level_kinematics.py` | 카메라 수신, 집기 단계, 파지 후 이탈 경로를 관리하고 집게의 목표 위치·자세를 관절 명령으로 변환합니다. |
 | `robot/camera_hover.py`, `robot/grid_hover.py` | 카메라 검출값을 읽고 작업면 좌표를 변환하며 관측 자세를 초기화합니다. |
 | `robot/object_pick.py`, `robot/coordinate_pick.py` | 물체별 설정값과 LeArm 시리얼 통신, 이동 및 집게 명령을 제공합니다. |
 | `robot/requirements.txt` | PC용 Python 의존성을 정의합니다. |

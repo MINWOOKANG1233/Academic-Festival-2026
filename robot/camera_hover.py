@@ -45,12 +45,22 @@ def read_stable_target(camera, timeout: float = 15) -> tuple[float, float]:
     deadline = time.monotonic() + timeout
     samples: list[tuple[float, float]] = []
     last_frame = -1
+    last_rejection = None
     while time.monotonic() < deadline:
         line = camera.read_until(size=CAMERA_LINE_LIMIT)
         if not line or line.startswith(b"JPEG "):
             continue
         detection = read_detection(line) if line.endswith(b"\n") else None
         if detection is None:
+            try:
+                data = json.loads(line)
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                data = None
+            if isinstance(data, dict):
+                if data.get("found") is True and data.get("inside_grid") is False:
+                    last_rejection = f"보정 영역 밖 · 좌표 ({data.get('x_mm')}, {data.get('y_mm')}) mm"
+                elif data.get("status"):
+                    last_rejection = str(data["status"])
             samples.clear()
             continue
         frame, x_mm, y_mm = detection
@@ -58,12 +68,14 @@ def read_stable_target(camera, timeout: float = 15) -> tuple[float, float]:
             samples.clear()
             continue
         if any(math.hypot(x_mm - x, y_mm - y) > 3 for x, y in samples):
+            last_rejection = "프레임 간 좌표 차이 3 mm 초과"
             samples.clear()
         last_frame = frame
         samples.append((x_mm, y_mm))
         if len(samples) == 3:
             return sum(x for x, _ in samples) / 3, sum(y for _, y in samples) / 3
-    raise TimeoutError("카메라에서 연속된 안정 좌표 3개를 받지 못했습니다.")
+    detail = f" 마지막 거절 이유 · {last_rejection}" if last_rejection else ""
+    raise TimeoutError(f"카메라에서 연속된 안정 좌표 3개를 받지 못했습니다.{detail}")
 
 
 @dataclass(frozen=True)
