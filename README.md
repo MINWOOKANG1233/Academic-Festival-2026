@@ -92,7 +92,7 @@ Windows 시연은 물체를 직접 선택한 뒤 접근, 정렬, 파지, 상승�
 
 | 위치 | 역할 |
 |---|---|
-| `start_cube_control.cmd` | Windows 시연 실행 |
+| `setup.cmd`, `start_cube_control.cmd` | Windows 최초 설치 및 시연 실행 |
 | `robot/` | 제어 화면, 집기 계획, 역기구학, 시리얼 통신 |
 | `vision/` | WonderMV 전경 검출과 USB 출력 |
 | `robot/tests/` | 장비 없이 실행하는 자동 테스트 |
