@@ -24,11 +24,6 @@ UART_OUTPUT_ENABLED = False  # Enable when sending JSON through WonderMV's exter
 OUTPUT_INTERVAL_MS = 1000
 
 usb = None
-if OUTPUT_ENABLED and USB_C_OUTPUT_ENABLED:
-    from machine import UART
-    usb = UART.repl_uart()
-    # Release the IDE debug link and stream JSON over the same USB-C cable.
-    usb.init(115200, 8, None, 1, read_buf_len=2048, ide=False)
 
 uart = None
 if UART_OUTPUT_ENABLED:
@@ -95,6 +90,7 @@ def foreground_target(img, background, original=None):
     return blob, "OK"
 
 
+print("CAMERA START: initializing LCD and sensor")
 lcd.init()
 sensor.reset()
 sensor.set_pixformat(sensor.RGB565)
@@ -127,6 +123,16 @@ data = {
     "calibration_ready": H is not None
 }
 gc.collect()
+
+# Finish sensor setup before giving up the IDE link. Initialization errors remain
+# visible in the IDE instead of being hidden by the UART mode switch.
+if OUTPUT_ENABLED and USB_C_OUTPUT_ENABLED:
+    print("CAMERA INITIALIZED: switching to USB stream; IDE preview may stop")
+    time.sleep_ms(500)
+    from machine import UART
+    usb = UART.repl_uart()
+    usb.init(115200, 8, None, 1, read_buf_len=2048, ide=False)
+    usb.write(b"LEARM CAMERA READY\n")
 
 while True:
     clock.tick()
