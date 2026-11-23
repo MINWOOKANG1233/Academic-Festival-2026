@@ -74,7 +74,8 @@ def cube_view(jpeg, *, allow_bottom_crop=False):
         raise ValueError("큐브 윗변을 충분히 확인하지 못했어요.")
     if abs(median(left_edge)-median(right_edge)) > (23 if allow_bottom_crop else 18):
         raise ValueError("큐브의 변이 집게 방향과 비스듬해 자동 파지를 중단했어요.")
-    return center, min(y for _, y in points)
+    top = round(median(left_edge + right_edge)) if allow_bottom_crop else min(y for _, y in points)
+    return center, top
 
 
 def align_cube(cycle, jpeg, *, high):

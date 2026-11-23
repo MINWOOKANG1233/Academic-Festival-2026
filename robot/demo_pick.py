@@ -110,6 +110,8 @@ def photo_position(profile, jpeg, *, high=False, bright_tube=False):
     left = min(x for x, _ in object_pixels)
     right = max(x for x, _ in object_pixels)
     if left <= 55 or right >= 264 or not (19 if eclipse else 25) <= right-left <= 175:
+        if not eclipse and not high and not bright_tube:
+            return photo_position(profile, jpeg, bright_tube=True)
         raise ValueError("사진에서 물체 양옆이 잘려 있어요. 화면에서 직접 정렬을 확인하세요.")
     top = min(y for _, y in object_pixels)
     if eclipse:
@@ -212,6 +214,8 @@ def align_demo_depth(cycle, jpeg):
         if abs(x-target_x) > (final_x_tolerance if eclipse and y > ECLIPSE_SIDE_CLEARANCE_Y else x_tolerance):
             try:
                 jpeg = align_demo_object(cycle, jpeg, require_clearance=eclipse)
+                previous_y_error = None
+                cycle.report("좌우 보정 뒤 새 사진을 앞뒤 보정 기준으로 사용")
             except AlignmentPathError:
                 if not cube:
                     raise

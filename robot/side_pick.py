@@ -176,15 +176,27 @@ class SidePick:
         self.check_stop()
         return jpeg
 
-    def move_tool(self, end, plan=None, *, settle_yaw=False):
+    def move_tool(self, end, plan=None, *, settle_yaw=False, smooth=False):
         if plan is None:
             plan = plan_tool_move(self.pose, end)
         actual = self.arm.read_positions()
         if any(abs(actual[i] - self.joints[i]) > 12 for i in range(2, 7)):
             raise OSError("직전 관절 자세와 달라졌어요. 현재 위치를 확인하세요.")
         self.report(f"목표 모델 자세 {end}")
-        for targets in plan:
-            duration, wait = (450, .57) if self.fast else (600, .72)
+        index = 0
+        while index < len(plan):
+            targets = plan[index]
+            duration, wait = (400, .52) if self.fast else (520, .64)
+            if smooth and index + 1 < len(plan):
+                next_targets = plan[index + 1]
+                midpoint = pose_from_joints({i: (actual[i] + goal) / 2 for i, goal in next_targets.items()})
+                reference = pose_from_joints(targets)
+                if (math.dist((midpoint.x, midpoint.y, midpoint.z), (reference.x, reference.y, reference.z)) <= 3
+                        and abs(midpoint.pitch - reference.pitch) <= 2):
+                    targets = next_targets
+                    duration += 170
+                    wait += .17
+                    index += 1
             actual = self.send(joint_packet(targets, duration), wait)
             if any(abs(actual[i] - goal) > 12 for i, goal in targets.items()):
                 time.sleep(.6)
@@ -194,6 +206,7 @@ class SidePick:
                 self.report(f"관절 정착 재확인 {actual}")
             if any(abs(actual[i] - goal) > 12 for i, goal in targets.items()):
                 raise OSError("목표 관절값에 도달하지 못했어요. 남은 이동을 중단했어요.")
+            index += 1
         if settle_yaw:
             for retry in range(3):
                 if abs(actual[6] - targets[6]) <= 3:
@@ -262,7 +275,7 @@ class SidePick:
         positions = self.joints
         self.report(f"높은 접근 명령 {stop}")
         for command in commands:
-            actual = self.send(command, .78 if self.fast else 1.0)
+            actual = self.send(command, .72 if self.fast else .90)
             if max(abs(actual[i] - positions[i]) for i in range(3, 7)) <= 2:
                 raise OSError("접근 중 관절 변화가 작아 이동을 멈췄어요.")
             positions = actual

@@ -14,7 +14,7 @@ set /p CAMERA_PORT=Camera COM port [COM5]:
 set /p ROBOT_PORT=Robot arm COM port:
 if "%ROBOT_PORT%"=="" goto badport
 if /i "%CAMERA_PORT%"=="%ROBOT_PORT%" goto badport
-"%YOLO_PY%" "%~dp0robot\yolo_pick.py" --camera-port "%CAMERA_PORT%" --robot-port "%ROBOT_PORT%" --execute
+"%YOLO_PY%" "%~dp0robot\yolo_pick.py" --camera-port "%CAMERA_PORT%" --robot-port "%ROBOT_PORT%" --execute --sort
 pause
 exit /b
 :badport

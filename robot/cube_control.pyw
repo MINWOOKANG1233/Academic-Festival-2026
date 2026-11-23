@@ -19,6 +19,10 @@ if deps.is_dir():
 from PIL import Image, ImageTk
 from demo_pick import GRASP_PRESETS, align_demo_depth, close_demo_object, demo_approach, demo_lower, run_demo
 from side_pick import CameraStream, SidePick, Step
+from camera_hover import CameraTarget
+from grid_hover import grid_to_arm
+from sort_bins import BINS, bin_path, place_in_bin
+from yolo_pick import LABELS, stable_target
 
 
 STAGES = {
@@ -56,6 +60,8 @@ class SidePickControl:
         self.step = Step.HOME
         self.busy = False
         self.advanced = False
+        self.sorting = False
+        self.model = None
         self.enter_down = False
         self.session = None
         self.ports = None
@@ -101,9 +107,14 @@ class SidePickControl:
         self.object_box = ttk.Combobox(form, textvariable=self.object_name, state="readonly",
                                        values=[profile.name for profile in OBJECTS.values()])
         self.object_box.grid(row=0, column=1, sticky="w")
-        ttk.Label(form, text="시험 물체 직접 선택").grid(row=0, column=0, sticky="w")
+        self.object_label = ttk.Label(form, text="시험 물체 직접 선택")
+        self.object_label.grid(row=0, column=0, sticky="w")
+        self.recognized_name = tk.StringVar(value="인식 대기")
+        self.recognized_label = ttk.Label(form, textvariable=self.recognized_name)
+        self.recognized_label.grid(row=0, column=1, sticky="w")
         self.profile_text = tk.StringVar()
-        ttk.Label(form, textvariable=self.profile_text, wraplength=470).grid(row=1, columnspan=2, sticky="w")
+        self.profile_label = ttk.Label(form, textvariable=self.profile_text, wraplength=470)
+        self.profile_label.grid(row=1, columnspan=2, sticky="w")
         self.guide = tk.StringVar()
         ttk.Label(form, textvariable=self.guide, wraplength=390, justify="left").grid(
             row=2, columnspan=2, sticky="w", pady=(12, 6))
@@ -165,6 +176,10 @@ class SidePickControl:
         self.auto_button.pack(side="right")
         self.background_button = ttk.Button(automatic, text="빈 배경 촬영", command=self.capture_background)
         self.background_button.pack(side="right", padx=(0, 6))
+        self.sort_mode = tk.BooleanVar(value=True)
+        self.sort_check = ttk.Checkbutton(content, text="YOLO 자동 인식 및 분류통 사용", variable=self.sort_mode,
+                                         command=self.show_step)
+        self.sort_check.pack(anchor="w")
         root.bind("<KeyPress-Return>", self.press_enter)
         root.bind("<KeyRelease-Return>", self.release_enter)
         self.show_step()
@@ -181,7 +196,7 @@ class SidePickControl:
         self.fields["close"].set("425" if profile is OBJECTS["cube"] else str(GRASP_PRESETS[profile][-1]))
         self.fields["pitch"].set("-60" if profile is OBJECTS["cube"] else "-55")
         self.guide.set("1. 작업면을 비우고 확인란에 체크한 뒤 빈 배경 촬영을 눌러요.\n"
-                       "2. 물체 하나를 놓고 같은 물체를 화면에서 선택해요.\n"
+                       "2. 물체 하나를 놓아요. YOLO 분류 모드에서는 물체 종류를 자동으로 선택해요.\n"
                        "3. 손과 경로를 비운 뒤 체크하고 전체 자동 실행을 눌러요. 집고 내려놓은 뒤 초기 자세로 돌아와요.\n"
                        "한 동작씩 확인하려면 아래 단계별 버튼을 순서대로 눌러요.")
         for key in ("height", "opening", "insert", "offset_x", "offset_y"):
@@ -215,6 +230,18 @@ class SidePickControl:
             button.configure(state="normal" if enabled else "disabled")
         self.photo_button.configure(state="normal" if align else "disabled")
         unlocked = self.step is Step.HOME and not self.busy
+        self.sort_check.configure(state="normal" if unlocked else "disabled")
+        auto_select = self.sort_mode.get()
+        self.object_label.configure(text="YOLO 인식 결과" if auto_select else "시험 물체 직접 선택")
+        if auto_select:
+            self.object_box.grid_remove()
+            self.profile_label.grid_remove()
+            self.recognized_label.grid()
+        else:
+            self.recognized_label.grid_remove()
+            self.object_box.grid()
+            self.profile_label.grid()
+        self.stage_buttons[Step.RELEASE].configure(text="분류통에 놓기" if self.sorting else "내려놓기")
         self.object_box.configure(state="readonly" if unlocked else "disabled")
         for key, entry in self.entries.items():
             entry.configure(state="normal" if not self.busy and (unlocked or key not in ("camera", "arm"))
@@ -288,6 +315,8 @@ class SidePickControl:
         self.result.set("")
         for key in ("height", "opening", "insert", "offset_x", "offset_y"):
             self.fields[key].set("")
+        self.sorting = self.sort_mode.get()
+        self.recognized_name.set("인식 대기")
         self.start(action, self.profile, ports)
 
     def advance(self):
@@ -303,10 +332,10 @@ class SidePickControl:
             if self.step is Step.HOME:
                 self.begin("connect")
             elif self.step is Step.DETECT:
-                offsets = (self.read("forward"), self.read("left")) if self.advanced else (0, 0)
+                offsets = (self.read("forward"), self.read("left")) if self.advanced and not self.sorting else (0, 0)
                 self.start("detect", *offsets)
             elif self.step is Step.APPROACH:
-                if self.advanced:
+                if self.advanced and not self.sorting:
                     self.start("approach", self.read("standoff"), self.read("rise"))
                 else:
                     self.start("demo_approach")
@@ -314,17 +343,17 @@ class SidePickControl:
                 if not self.photos or self.photo_choice.get() != next(reversed(self.photos)):
                     raise ValueError("가장 최근 사진을 선택하세요.")
                 if self.step is Step.LOWER:
-                    if self.advanced:
+                    if self.advanced and not self.sorting:
                         self.start("lower", self.read("height", float), self.read("height_trim", float),
                                    self.read("opening", float), self.read("pitch", float), self.read("roll"))
                     else:
                         self.start("demo_lower")
-                elif self.advanced:
+                elif self.advanced and not self.sorting:
                     self.start("insert", self.read("insert"))
                 else:
                     self.start("demo_align")
             elif self.step is Step.CLOSE:
-                if self.advanced:
+                if self.advanced and not self.sorting:
                     self.start("close", self.read("close"))
                 else:
                     self.start("demo_close")
@@ -335,7 +364,10 @@ class SidePickControl:
                     raise ValueError("들렸는지 시험 결과를 먼저 선택하세요.")
                 offsets = {key: self.read(key, float) for key in ("offset_x", "offset_y") if self.fields[key].get()}
                 self.record.update(result=self.result.get(), measured_offsets_mm=offsets)
-                self.start("release")
+                if self.sorting and self.result.get() == "들림":
+                    self.start("sort_release")
+                else:
+                    self.start("release")
             else:
                 self.start("finish")
         except ValueError as error:
@@ -400,13 +432,58 @@ class SidePickControl:
         if self.cancel.is_set():
             raise InterruptedError("중단 요청을 받았어요.")
 
+    def detect_for_sort(self):
+        cycle = self.session
+        cycle.require_step(Step.DETECT)
+        cycle.progress("YOLO 모델 로딩 및 물체 인식")
+        if self.model is None:
+            from ultralytics import YOLO
+
+            model = YOLO(str(ROOT / "vision/models/best_v1_3class.pt"))
+            if model.task != "detect" or set(model.names.values()) != set(LABELS):
+                raise ValueError("세 물체용 YOLO 모델을 확인하세요.")
+            self.model = model
+        detection = stable_target(cycle.camera, self.model, .6, report=cycle.report,
+                                  check_stop=cycle.check_stop,
+                                  on_photo=lambda jpeg: cycle.on_photo("observe", jpeg))
+        cycle.profile = OBJECTS[LABELS[detection.label]]
+        cycle.fast = cycle.profile is OBJECTS["cube"]
+        cycle.detection = CameraTarget(detection.x_mm, detection.y_mm,
+                                       grid_to_arm(detection.x_mm, detection.y_mm), (0, 0))
+        cycle.step = Step.APPROACH
+        self.events.put(("identified", (cycle.profile, detection)))
+
+    def align_for_pick(self):
+        cycle = self.session
+        align_demo_depth(cycle, cycle.snapshot("align"))
+        cycle.insert(0)
+
+    def close_for_pick(self):
+        cycle = self.session
+        if self.sorting:
+            bin_path(cycle, cycle.lift_pose)
+        close_demo_object(cycle)
+
     def run(self, action, args):
         automatic = action in ("connect_and_run", "demo_run")
         try:
             if action in ("connect", "connect_and_run", "connect_and_capture"):
                 self.connect(*args, require_background=action == "connect_and_capture")
-            if automatic:
+            if automatic and self.sorting:
+                self.detect_for_sort()
+                demo_approach(self.session)
+                demo_lower(self.session)
+                self.align_for_pick()
+                self.close_for_pick()
+                self.session.lift()
+                self.events.put(("log", "상승 완료 · 들림과 분류통 경로를 확인한 뒤 분류통에 놓기를 누르세요."))
+            elif automatic:
                 run_demo(self.session)
+                self.disconnect()
+            elif action == "detect" and self.sorting:
+                self.detect_for_sort()
+            elif action == "sort_release":
+                place_in_bin(self.session)
                 self.disconnect()
             elif action in ("connect_and_capture", "capture_background"):
                 self.session.capture_background()
@@ -416,11 +493,9 @@ class SidePickControl:
             elif action == "demo_lower":
                 demo_lower(self.session)
             elif action == "demo_align":
-                jpeg = self.session.snapshot("align")
-                align_demo_depth(self.session, jpeg)
-                self.session.insert(0)
+                self.align_for_pick()
             elif action == "demo_close":
-                close_demo_object(self.session)
+                self.close_for_pick()
             elif action == "finish":
                 self.session.home()
                 self.disconnect()
@@ -428,8 +503,10 @@ class SidePickControl:
                 getattr(self.session, action)(*args)
             step = self.session.step if self.session is not None else Step.HOME
             self.events.put(("done", (step, None)))
-            if automatic:
+            if automatic and not self.sorting:
                 self.events.put(("completed", "자동 시연 완료 · 내려놓기 및 초기 복귀"))
+            elif action == "sort_release":
+                self.events.put(("log", "분류통에 놓기 및 초기 복귀 완료"))
             elif action in ("connect_and_capture", "capture_background"):
                 self.events.put(("background_ready", "배경 준비 완료 · 물체 하나를 놓으세요."))
         except (ValueError, TimeoutError) as error:
@@ -458,6 +535,13 @@ class SidePickControl:
                 if error:
                     self.status.set(error)
                     self.append_log(error)
+            elif kind == "identified":
+                profile, detection = value
+                self.recognized_name.set(f"{profile.name} · 신뢰도 {detection.confidence:.0%}")
+                self.record.update(object=profile.name, yolo_confidence=detection.confidence,
+                                   grid_mm=(detection.x_mm, detection.y_mm),
+                                   bin_xy_mm=BINS[profile][:2])
+                self.append_log(f"{profile.name} 선택 · 분류통 좌표 {BINS[profile][:2]} mm")
             elif kind == "background_ready":
                 if not self.cancel.is_set():
                     self.status.set(value)

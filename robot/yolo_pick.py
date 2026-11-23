@@ -17,9 +17,10 @@ from PIL import Image
 from camera_hover import CameraTarget
 from demo_pick import (demo_approach, demo_lower, align_demo_depth,
                        lift_demo_object)
-from grid_hover import grid_to_arm, require_hover_range
+from grid_hover import grid_to_arm
 from object_pick import OBJECTS
 from side_pick import CameraStream, SidePick, Step, raw_photo
+from sort_bins import bin_path, place_in_bin
 
 ROOT = Path(__file__).resolve().parents[1]
 LABELS = {"candy_tin": "eclipse", "cube_block": "cube", "tissue_core": "tube"}
@@ -67,7 +68,6 @@ def select_detection(rows, names, confidence):
         raise ValueError("물체가 화면 가장자리에 닿거나 잘렸습니다.")
     cx, cy = (x1+x2)/2, (y1+y2)/2
     x, y = pixel_to_mm(cx, cy)
-    require_hover_range(grid_to_arm(x, y))
     return Detection(label, score, cx, cy, x, y)
 
 
@@ -84,25 +84,32 @@ def detect_photo(model, jpeg, confidence):
     return select_detection(result.boxes.data.cpu().tolist(), model.names, confidence)
 
 
-def stable_target(camera, model, confidence, output):
+def stable_target(camera, model, confidence, output=None, *, report=None, check_stop=None, on_photo=None):
     samples = []
     for attempt in range(9):
+        if check_stop:
+            check_stop()
         jpeg = raw_photo(camera)
+        if check_stop:
+            check_stop()
+        if on_photo:
+            on_photo(jpeg)
         try:
             detection = detect_photo(model, jpeg, confidence)
         except ValueError as error:
             samples.clear()
-            print(f"검출 대기: {error}", flush=True)
+            (report or print)(f"검출 대기: {error}")
             continue
         if samples and not all(compatible(old, detection) for old in samples):
             samples.clear()
         samples.append(detection)
-        print(f"{detection.label} 확신도 {detection.confidence:.2f} · "
+        (report or print)(f"{detection.label} 확신도 {detection.confidence:.2f} · "
               f"픽셀 ({detection.cx:.1f}, {detection.cy:.1f}) · "
-              f"격자 ({detection.x_mm:.1f}, {detection.y_mm:.1f}) mm", flush=True)
+              f"격자 ({detection.x_mm:.1f}, {detection.y_mm:.1f}) mm")
         if len(samples) == 3:
-            output.mkdir(parents=True, exist_ok=True)
-            (output/'observation.jpg').write_bytes(jpeg)
+            if output is not None:
+                output.mkdir(parents=True, exist_ok=True)
+                (output/'observation.jpg').write_bytes(jpeg)
             return detection
     raise ValueError("같은 종류·3 mm 이내의 안정 검출 3개를 얻지 못했습니다.")
 
@@ -118,7 +125,7 @@ class YoloSidePick(SidePick):
         self.step = Step.APPROACH
 
 
-def supervised_pick(cycle, ask=input):
+def supervised_pick(cycle, ask=input, *, sort=False):
     cycle.fast = cycle.profile is OBJECTS['cube']
     cycle.detect(0, 0)
     demo_approach(cycle)
@@ -127,7 +134,15 @@ def supervised_pick(cycle, ask=input):
         return
     align_demo_depth(cycle, demo_lower(cycle))
     cycle.insert(0)
+    if sort:
+        bin_path(cycle, cycle.lift_pose)
     lift_demo_object(cycle)
+    if sort:
+        if ask("물체가 들렸고 분류통까지 경로가 비었으면 SORT 입력: ").strip() == "SORT":
+            place_in_bin(cycle)
+        else:
+            print("들어 올린 자세를 유지합니다.")
+        return
     if ask('상승 완료. 실제로 들렸는지 확인하세요. 원래 자리에 내려놓고 복귀하려면 RELEASE 입력: ').strip() != 'RELEASE':
         print('현재 자세를 유지합니다. 자동으로 집게를 열거나 복귀하지 않습니다.')
         return
@@ -142,6 +157,7 @@ def main():
     parser.add_argument('--model', type=Path, default=ROOT/'vision/models/best_v1_3class.pt')
     parser.add_argument('--conf', type=float, default=.6)
     parser.add_argument('--execute', action='store_true')
+    parser.add_argument('--sort', action='store_true')
     args = parser.parse_args()
     if not 0 < args.conf <= 1:
         parser.error('확신도는 0 초과 1 이하여야 합니다.')
@@ -190,7 +206,7 @@ def main():
         cycle.yolo_target = CameraTarget(fresh.x_mm, fresh.y_mm,
                                          grid_to_arm(fresh.x_mm, fresh.y_mm), (0, 0))
         # Existing photos still refine alignment after approach. No moving-pose H conversion.
-        supervised_pick(cycle)
+        supervised_pick(cycle, sort=args.sort)
 
 
 if __name__ == '__main__':
