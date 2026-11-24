@@ -176,7 +176,7 @@ class SidePick:
         self.check_stop()
         return jpeg
 
-    def move_tool(self, end, plan=None, *, settle_yaw=False, smooth=False):
+    def move_tool(self, end, plan=None, *, settle_yaw=False, smooth=False, transport=False):
         if plan is None:
             plan = plan_tool_move(self.pose, end)
         actual = self.arm.read_positions()
@@ -186,16 +186,41 @@ class SidePick:
         index = 0
         while index < len(plan):
             targets = plan[index]
-            duration, wait = (400, .52) if self.fast else (520, .64)
-            if smooth and index + 1 < len(plan):
+            duration, wait = 220, .30
+            if transport:
+                duration = max(450, round(max(abs(actual[i]-value) for i, value in targets.items()) * 8))
+                wait = duration/1000 + .12
+            if transport and smooth:
+                for count in range(min(6, len(plan)-index), 1, -1):
+                    candidate = plan[index+count-1]
+                    close = True
+                    for step in range(1, count+1):
+                        interpolated = pose_from_joints({
+                            servo: actual[servo] + (value-actual[servo])*step/count
+                            for servo, value in candidate.items()
+                        })
+                        reference = pose_from_joints(plan[index+step-1])
+                        if (math.dist((interpolated.x, interpolated.y, interpolated.z),
+                                      (reference.x, reference.y, reference.z)) > 3
+                                or abs(interpolated.pitch-reference.pitch) > 2):
+                            close = False
+                            break
+                    if close:
+                        targets = candidate
+                        duration = 180 + 65*(count-1)
+                        wait = duration/1000 + .08
+                        index += count-1
+                        self.report(f"분류통 운반 · {count}개 경로점을 {duration} ms 이동으로 연결")
+                        break
+            elif smooth and index + 1 < len(plan):
                 next_targets = plan[index + 1]
                 midpoint = pose_from_joints({i: (actual[i] + goal) / 2 for i, goal in next_targets.items()})
                 reference = pose_from_joints(targets)
                 if (math.dist((midpoint.x, midpoint.y, midpoint.z), (reference.x, reference.y, reference.z)) <= 3
                         and abs(midpoint.pitch - reference.pitch) <= 2):
                     targets = next_targets
-                    duration += 170
-                    wait += .17
+                    duration += 90
+                    wait += .09
                     index += 1
             actual = self.send(joint_packet(targets, duration), wait)
             if any(abs(actual[i] - goal) > 12 for i, goal in targets.items()):
@@ -213,7 +238,7 @@ class SidePick:
                     break
                 self.progress(f"밑판 보정 재시도 {retry + 1}/3")
                 self.report(f"밑판 목표 {targets[6]} / 응답 {actual[6]} · 같은 목표로 재전송")
-                actual = self.send(joint_packet(targets, 650), .85)
+                actual = self.send(joint_packet(targets, 400), .52)
             yaw_error = abs(actual[6] - targets[6])
             if yaw_error > 9 or any(abs(actual[i] - goal) > 12 for i, goal in targets.items()):
                 raise OSError(f"밑판 보정 목표 {targets[6]} / 실제 {actual[6]} · 관절 오차가 커서 중단했어요.")
@@ -227,7 +252,7 @@ class SidePick:
         self.require_step(Step.HOME, Step.RETURN)
         self.progress("초기 자세로 복귀 · 집게 열기")
         self.check_stop()
-        self.joints = reset_observation_pose(self.arm)
+        self.joints = reset_observation_pose(self.arm, check_stop=self.check_stop)
         self.report(f"관절값 {self.joints}")
         self.step = Step.DETECT
 
@@ -275,7 +300,7 @@ class SidePick:
         positions = self.joints
         self.report(f"높은 접근 명령 {stop}")
         for command in commands:
-            actual = self.send(command, .72 if self.fast else .90)
+            actual = self.send(command, .62)
             if max(abs(actual[i] - positions[i]) for i in range(3, 7)) <= 2:
                 raise OSError("접근 중 관절 변화가 작아 이동을 멈췄어요.")
             positions = actual
@@ -292,7 +317,8 @@ class SidePick:
         if not (-70 <= pitch <= -30 and 125 <= roll <= 875):
             raise ValueError("파지 기울기는 −70~−30°, 손목 회전 서보는 125~875로 입력하세요.")
         grasp_height = self.profile.grasp_height_mm + height_trim
-        if not (abs(height_trim) <= 20 and 5 <= grasp_height <= self.profile.height_mm - 3):
+        trim_limit = 30 if self.profile.name == "휴지심" else 20
+        if not (abs(height_trim) <= trim_limit and 5 <= grasp_height <= self.profile.height_mm - 3):
             raise ValueError("파지 높이 보정은 ±20 mm 안에서 물체 옆면을 기준으로 입력하세요.")
         descent = measured_height - grasp_height
         if not 0 <= descent <= 160 or measured_height <= self.profile.height_mm:
@@ -336,7 +362,7 @@ class SidePick:
         if not 0 < max(abs(x), abs(y), abs(z)) <= 10 or sum(v != 0 for v in (x, y, z)) != 1:
             raise ValueError("한 번에 한 축을 1~10 mm 움직일 수 있어요.")
         total = tuple(a + b for a, b in zip(self.jog_total, (x, y, z)))
-        if (x and not -back_limit <= total[0] <= forward_limit) or abs(total[2]) > 15:
+        if abs(total[2]) > 15:
             raise ValueError("정렬 누적 이동 한계를 넘었어요.")
         if self.step is Step.LOWER and z:
             raise ValueError("첫 사진에서는 앞뒤·좌우만 보정하세요.")

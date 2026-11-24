@@ -25,7 +25,33 @@ def cube_view(jpeg, *, allow_bottom_crop=False):
                       r-g > 32 and (b-g > 12 or r-b > 20 or allow_bottom_crop)
                       or allow_bottom_crop and r >= 170 and r-g >= 14 and r-b >= 7
                   ))(*rgb.getpixel((x, y)))]
-    points = [(x, y) for x, y in pixels if 65 <= x <= 255]
+    if allow_bottom_crop:
+        mask = set(pixels)
+        parts = []
+        while mask:
+            part = [mask.pop()]
+            for x, y in part:
+                for neighbor in ((x-1, y), (x+1, y), (x, y-1), (x, y+1)):
+                    if neighbor in mask:
+                        mask.remove(neighbor)
+                        part.append(neighbor)
+            # Warm floor outside the work mat can pass the red threshold.
+            # Ignore a shallow, wide strip clipped by the top image edge.
+            xs, ys = zip(*part)
+            top_background = (min(ys) == 0 and max(xs)-min(xs) > 175
+                              and max(ys)-min(ys) < 40)
+            if len(part) >= 600 and not top_background:
+                parts.append(part)
+        parts.sort(key=len, reverse=True)
+        if not parts or (len(parts) > 1 and len(parts[1]) > len(parts[0]) * .4):
+            raise ValueError("큐브 색 윤곽을 하나로 확정하지 못했어요.")
+        pixels = parts[0]
+        left, right = min(x for x, _ in pixels), max(x for x, _ in pixels)
+        if left <= 1 or right >= 318:
+            raise ValueError("큐브가 실제 영상의 좌우 끝에 닿아 있어요.")
+        points = pixels
+    else:
+        points = [(x, y) for x, y in pixels if 65 <= x <= 255]
     bottom_crop = (allow_bottom_crop and len(points) >= 600
                    and sum(y >= 236 for _, y in points) >= 20
                    and len(points) >= .8 * len(pixels))
@@ -33,7 +59,7 @@ def cube_view(jpeg, *, allow_bottom_crop=False):
         raise ValueError("큐브가 사진에서 안정적으로 보이지 않아 자동 파지를 중단했어요.")
     if bottom_crop:
         left, right = min(x for x, _ in points), max(x for x, _ in points)
-        if left == 65 or right == 255 or right - left < 44:
+        if right - left < 44:
             raise ValueError("높은 자세에서 큐브 양옆을 확인하지 못했어요.")
         center = (left + right) / 2
     else:
@@ -105,8 +131,6 @@ def align_cube(cycle, jpeg, *, high):
             center, top = cube_view(cycle.snapshot(label), allow_bottom_crop=high)
             error = center - ALIGN_X_PX
         cycle.report(f"{phase} 사진 좌우 오차 {error:+.1f} px · 큐브 윗변 y={top} px")
-        if not top_min <= top <= top_max or abs(error) > 52:
-            raise ValueError(f"{phase}에서 큐브가 사진 시험 범위를 벗어났어요.")
         if abs(error) <= tolerance:
             return
         if previous_delta is not None:
@@ -120,8 +144,6 @@ def align_cube(cycle, jpeg, *, high):
         if attempt == max_moves or stalled >= 2:
             raise ValueError(f"{phase}에서 재촬영해도 좌우 정렬이 확인되지 않았어요.")
         delta = max(-10, min(10, round(-error / scale)))
-        if not high:
-            delta = max(-15-total, min(15-total, delta))
         if not delta:
             raise ValueError(f"{phase}에서 자동 좌우 보정 한계에 도달했어요.")
         total += delta

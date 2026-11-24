@@ -56,8 +56,21 @@ def pixel_to_mm(cx, cy):
 def select_detection(rows, names, confidence):
     """Reject extra boxes, unknown classes and clipped objects; never pick largest."""
     candidates = [row for row in rows if float(row[4]) >= confidence]
+    candidates = [
+        row for row in candidates
+        if not (
+            (float(row[0]) <= 1 or float(row[1]) <= 1
+             or float(row[2]) >= 319 or float(row[3]) >= 239)
+            and 0 < (float(row[2])-float(row[0])) * (float(row[3])-float(row[1])) <= 400
+        )
+    ]
     if len(candidates) != 1:
-        raise ValueError(f"물체 상자가 {len(candidates)}개입니다. 물체 하나만 놓고 오검출을 확인하세요.")
+        details = "; ".join(
+            f"{names.get(int(row[5]), 'unknown')} {float(row[4]):.2f} "
+            f"box=({float(row[0]):.0f},{float(row[1]):.0f},{float(row[2]):.0f},{float(row[3]):.0f})"
+            for row in candidates
+        )
+        raise ValueError(f"물체 상자가 {len(candidates)}개입니다. {details}")
     x1, y1, x2, y2, score, class_id = map(float, candidates[0])
     if not all(map(math.isfinite, (x1, y1, x2, y2, score, class_id))):
         raise ValueError("검출값이 유효하지 않습니다.")

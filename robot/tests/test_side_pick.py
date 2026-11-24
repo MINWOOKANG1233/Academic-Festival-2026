@@ -77,7 +77,7 @@ class Arm:
 
 class SidePickTests(unittest.TestCase):
     def test_eclipse_aligns_then_advances_at_observed_clearance(self):
-        machine = Mock(profile=OBJECTS["eclipse"], jog_total=(0, 0, 0))
+        machine = Mock(profile=OBJECTS["eclipse"], jog_total=(0, 0, 0), pose=ToolPose(200, 0, -60.67, -70))
         with patch("demo_pick.photo_position", side_effect=[
             (130, 105), (154, 105), (154, 124), (154, 137),
         ]), patch("demo_pick.align_demo_object", return_value=b"aligned") as lateral:
@@ -97,7 +97,7 @@ class SidePickTests(unittest.TestCase):
             self.assertAlmostEqual(photo_center(OBJECTS["eclipse"], output.getvalue()), 161, delta=2)
 
     def test_eclipse_retreats_before_lateral_alignment_when_too_close(self):
-        machine = Mock(profile=OBJECTS["eclipse"], jog_total=(0, 0, 0))
+        machine = Mock(profile=OBJECTS["eclipse"], jog_total=(0, 0, 0), pose=ToolPose(200, 0, -60.67, -70))
         with patch("demo_pick.photo_position", side_effect=[
             (132, 120), (132, 98), (161, 98), (161, 117), (161, 136),
         ]), patch("demo_pick.align_demo_object", return_value=b"aligned") as lateral:
@@ -118,10 +118,10 @@ class SidePickTests(unittest.TestCase):
         for key, x, before, after in (
             ("cube", 151, 126, 136),
             ("eclipse", 161, 130, 139),
-            ("tube", 142, 125, 133),
+            ("tube", 149, 125, 142),
         ):
             with self.subTest(object=key):
-                machine = Mock(profile=OBJECTS[key], jog_total=(0, 0, 0))
+                machine = Mock(profile=OBJECTS[key], jog_total=(0, 0, 0), pose=ToolPose(200, 0, -60.67, -70))
                 with patch("demo_pick.photo_position", side_effect=[(x, before), (x, after)]):
                     align_demo_depth(machine, b"frame")
                 self.assertGreater(machine.jog.call_args.args[0], 0)
@@ -129,7 +129,7 @@ class SidePickTests(unittest.TestCase):
     def test_high_view_accepts_bottom_crop_but_not_side_crop(self):
         from PIL import ImageDraw
 
-        for left, right, accepted in ((123, 177, True), (58, 112, False)):
+        for left, right, accepted in ((123, 177, True), (0, 54, False)):
             frame = Image.new("RGB", (320, 240))
             ImageDraw.Draw(frame).rectangle((left, 216, right, 239), fill=(235, 130, 190))
             with BytesIO() as output:
@@ -148,7 +148,7 @@ class SidePickTests(unittest.TestCase):
                     cube_view(jpeg, allow_bottom_crop=True)
 
     def test_lateral_alignment_boosts_only_after_little_image_motion(self):
-        machine = Mock(profile=OBJECTS["eclipse"], jog_total=(0, 0, 0))
+        machine = Mock(profile=OBJECTS["eclipse"], jog_total=(0, 0, 0), pose=ToolPose(200, 0, -60.67, -70))
         with patch("demo_pick.photo_center", side_effect=[195, 194, 164]):
             align_demo_object(machine, b"frame")
         self.assertEqual([call.args for call in machine.jog.call_args_list], [(0, -8, 0), (0, -10, 0)])
@@ -189,17 +189,17 @@ class SidePickTests(unittest.TestCase):
         self.assertEqual(read.call_count, 6)
 
     def test_depth_corrects_from_new_photos_and_skips_unneeded_travel(self):
-        machine = Mock(profile=OBJECTS["tube"], jog_total=(0, 0, 0))
-        with patch("demo_pick.photo_position", side_effect=[(142, 98), (142, 109), (142, 132)]):
+        machine = Mock(profile=OBJECTS["tube"], jog_total=(0, 0, 0), pose=ToolPose(200, 0, -60.67, -70))
+        with patch("demo_pick.photo_position", side_effect=[(142, 98), (142, 109), (142, 142)]):
             align_demo_depth(machine, b"frame")
         self.assertEqual([call.args for call in machine.jog.call_args_list], [(8, 0, 0), (8, 0, 0)])
         machine.jog.reset_mock()
-        with patch("demo_pick.photo_position", return_value=(142, 132)):
+        with patch("demo_pick.photo_position", return_value=(142, 142)):
             align_demo_depth(machine, b"frame")
         machine.jog.assert_not_called()
 
     def test_depth_stops_when_the_image_does_not_improve(self):
-        machine = Mock(profile=OBJECTS["tube"], jog_total=(0, 0, 0))
+        machine = Mock(profile=OBJECTS["tube"], jog_total=(0, 0, 0), pose=ToolPose(200, 0, -60.67, -70))
         with patch("demo_pick.photo_position", return_value=(142, 101)), self.assertRaises(ValueError):
             align_demo_depth(machine, b"frame")
         machine.jog.assert_called_once()
@@ -217,7 +217,7 @@ class SidePickTests(unittest.TestCase):
         self.assertEqual(arm.joints[1], 200)
 
     def test_demo_photo_alignment_recalculates_after_each_move(self):
-        machine = Mock(profile=OBJECTS["eclipse"], jog_total=(0, 0, 0))
+        machine = Mock(profile=OBJECTS["eclipse"], jog_total=(0, 0, 0), pose=ToolPose(200, 0, -60.67, -70))
         with patch("demo_pick.photo_center", side_effect=[201, 192, 163]):
             align_demo_object(machine, b"frame",)
         self.assertEqual([call.args for call in machine.jog.call_args_list], [(0, -8, 0), (0, -8, 0)])
@@ -248,7 +248,7 @@ class SidePickTests(unittest.TestCase):
 
     @patch("time.sleep")
     def test_demo_presets_prepare_and_grip_without_extra_forward_motion(self, _sleep):
-        for key, height in (("eclipse", 53), ("tube", 67.5)):
+        for key, height in (("eclipse", 53), ("tube", 77.5)):
             with self.subTest(object=key):
                 camera = Camera()
                 camera.y_mm = 72
@@ -302,7 +302,7 @@ class SidePickTests(unittest.TestCase):
         machine = Mock()
         with patch("auto_cube_pick.cube_view", side_effect=[(195.2, 58), (165.9, 65), (151.5, 72)]):
             align_cube(machine, b"first frame", high=False)
-        self.assertEqual([call.args for call in machine.jog.call_args_list], [(0, -10, 0), (0, -5, 0)])
+        self.assertEqual([call.args for call in machine.jog.call_args_list], [(0, -10, 0), (0, -7, 0)])
 
     def test_high_photo_correction_stops_before_lowering(self):
         machine = Mock()

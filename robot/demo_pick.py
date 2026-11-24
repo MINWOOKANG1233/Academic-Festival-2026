@@ -15,13 +15,13 @@ from side_pick import AlignmentPathError, Step
 GRASP_PRESETS = {
     OBJECTS["cube"]: (40, 0, 5, -70, 425),
     OBJECTS["eclipse"]: (40, 20, 15, -65, 605),
-    OBJECTS["tube"]: (50, 35, 20, -63, 420),
+    OBJECTS["tube"]: (50, 35, 30, -63, 420),
 }
 
 PHOTO_ALIGNMENT = {
     OBJECTS["cube"]: (151, 136, 13, 10),
     OBJECTS["eclipse"]: (161, 139, 16, 10),
-    OBJECTS["tube"]: (142, 133, 12, 8),
+    OBJECTS["tube"]: (149, 142, 12, 8),
 }
 # Observed top-edge change over successful insertions of 25, 18 and 15 mm.
 DEPTH_PIXELS_PER_MM = {
@@ -47,7 +47,7 @@ def join_eclipse_fragments(components):
     vertical_overlap = min(bottom, other_bottom) - max(top, other_top) + 1
     shorter = min(bottom - top + 1, other_bottom - other_top + 1)
     side_gap = max(left - other_right, other_left - right)
-    split_by_highlight = (1 <= side_gap <= 9 and vertical_overlap >= .8 * shorter
+    split_by_highlight = (side_gap <= 9 and vertical_overlap >= .8 * shorter
                           and abs(bottom - other_bottom) <= 8
                           and max(right, other_right) - min(left, other_left) <= 95)
     if (overlap >= .7 * narrower and 0 < gap <= 20) or split_by_highlight:
@@ -62,6 +62,8 @@ def component_bounds(points):
 def photo_position(profile, jpeg, *, high=False, bright_tube=False):
     if profile is OBJECTS["cube"]:
         return cube_view(jpeg, allow_bottom_crop=True)
+    if profile is OBJECTS["tube"] and not high and not bright_tube:
+        return photo_position(profile, jpeg, bright_tube=True)
     eclipse = profile is OBJECTS["eclipse"]
     with Image.open(BytesIO(jpeg)) as image:
         if image.size != (320, 240):
@@ -71,15 +73,16 @@ def photo_position(profile, jpeg, *, high=False, bright_tube=False):
         bottom = 195 if profile is OBJECTS["tube"] else 216
         if high or bright_tube:
             bottom = 240
+        left_limit, right_limit = (5, 315) if not eclipse and (high or bright_tube) else (55, 265)
         for y in range(40, bottom):
-            for x in range(55, 265):
+            for x in range(left_limit, right_limit):
                 red, green, blue = pixels[x, y]
                 if eclipse:
                     matches = (blue-green > 16 and blue-red >= -4 and red-green >= 10
                                or min(red, green, blue) >= 165 and blue-green >= 8
                                and red-green >= 6 and blue-red >= -12)
                 else:
-                    matches = (min(red, green, blue) >= 175 if high or bright_tube
+                    matches = (min(red, green, blue) >= (130 if high else 175) if high or bright_tube
                                else y >= 65 and max(red, green, blue) < 112)
                 if matches:
                     mask.add((x, y))
@@ -95,12 +98,17 @@ def photo_position(profile, jpeg, *, high=False, bright_tube=False):
             components.append(part)
     if (high or bright_tube) and not eclipse:
         components = [part for part in components if
-                      component_bounds(part)[0] > 55 and component_bounds(part)[1] < 264]
+                      component_bounds(part)[0] > left_limit and component_bounds(part)[1] < right_limit-1
+                      and 25 <= component_bounds(part)[1]-component_bounds(part)[0] <= 175
+                      and component_bounds(part)[2] > 40]
     components.sort(key=len, reverse=True)
     if eclipse:
         join_eclipse_fragments(components)
-    minimum_area = 650 if eclipse else 1600
-    ambiguous = len(components) > 1 and (not eclipse or len(components[1]) * 3 >= len(components[0]))
+    minimum_area = 650 if eclipse or bright_tube else 1600
+    ambiguous = len(components) > 1 and (
+        len(components[1]) * 2 >= len(components[0]) if bright_tube
+        else not eclipse or len(components[1]) * 3 >= len(components[0])
+    )
     if not components or ambiguous or not minimum_area <= len(components[0]) <= 15500:
         if not eclipse and not high and not bright_tube:
             return photo_position(profile, jpeg, bright_tube=True)
@@ -109,7 +117,8 @@ def photo_position(profile, jpeg, *, high=False, bright_tube=False):
     object_pixels = components[0]
     left = min(x for x, _ in object_pixels)
     right = max(x for x, _ in object_pixels)
-    if left <= 55 or right >= 264 or not (19 if eclipse else 25) <= right-left <= 175:
+    max_width = 210 if bright_tube else 175
+    if left <= left_limit or right >= right_limit-1 or not (19 if eclipse else 25) <= right-left <= max_width:
         if not eclipse and not high and not bright_tube:
             return photo_position(profile, jpeg, bright_tube=True)
         raise ValueError("사진에서 물체 양옆이 잘려 있어요. 화면에서 직접 정렬을 확인하세요.")
@@ -147,8 +156,8 @@ def align_demo_object(cycle, jpeg, *, require_clearance=False):
         cycle.report(f"{cycle.profile.name} 사진 좌우 오차 {error:+.1f} px")
         if abs(error) <= tolerance:
             return jpeg
-        if abs(error) > 48 or attempt == 5:
-            cycle.report("좌우 보정 종료 · 사진 범위 초과 또는 재시도 소진")
+        if attempt == 5:
+            cycle.report("좌우 보정 종료 · 재시도 소진")
             break
         if previous_error is not None and abs(error) > abs(previous_error) + 3:
             cycle.report("좌우 보정 종료 · 재촬영에서 오차 증가")
@@ -200,7 +209,7 @@ def align_demo_depth(cycle, jpeg):
             for _ in range(2):
                 if y <= ECLIPSE_SIDE_CLEARANCE_Y:
                     break
-                retreat = min(8, 15 + cycle.jog_total[0])
+                retreat = 8
                 if retreat <= 0:
                     break
                 cycle.progress("이클립스 통과 간격 확보 · 열린 집게 후퇴")
@@ -224,16 +233,19 @@ def align_demo_depth(cycle, jpeg):
                 if abs(x-target_x) > 24 or target_y-y < 35:
                     raise
                 cycle.report("큐브 좌우 경로 제한 · 열린 집게로 짧게 전진한 뒤 재정렬")
-                jpeg = cycle.jog(5, 0, 0, forward_limit=forward_limit, along_target=True)
+                for distance in (5, 8, 10):
+                    try:
+                        jpeg = cycle.jog(distance, 0, 0, forward_limit=forward_limit, along_target=True)
+                    except AlignmentPathError:
+                        continue
+                    break
+                else:
+                    raise AlignmentPathError("큐브 복구 전진 5·8·10 mm 경로를 찾지 못했어요.")
                 continue
             x, y = photo_position(cycle.profile, jpeg)
             error_y = target_y - y
         if abs(x-target_x) <= final_x_tolerance and -y_tolerance <= error_y <= MAX_SHORT_OF_DEPTH_PX:
             return
-        pixel_limit = 95 if eclipse or cube else 65
-        if abs(error_y) > pixel_limit:
-            reason = f"앞뒤 오차가 보정 가능 범위 ±{pixel_limit} px 초과"
-            break
         if previous_y_error is not None and abs(error_y) >= abs(previous_y_error)-1:
             reason = f"앞뒤 오차 개선 부족 · 직전 {previous_y_error:+.1f} px"
             break
@@ -242,14 +254,16 @@ def align_demo_depth(cycle, jpeg):
             break
         remaining = cycle.jog_total[0]
         delta = max(-8, min(8, round(error_y / DEPTH_PIXELS_PER_MM[cycle.profile])))
-        delta = max(-15-remaining, min(forward_limit-remaining, delta))
         if not delta:
             reason = f"추가 이동량 0 mm · 앞뒤 누적 {remaining:+g} mm"
             break
         cycle.progress(f"사진으로 앞뒤 보정 {attempt + 1}/{max_moves}")
         cycle.report(f"앞뒤 보정 {delta:+d} mm · 앞으로가 +")
+        previous_pitch = cycle.pose.pitch
         jpeg = cycle.jog(delta, 0, 0, forward_limit=forward_limit, along_target=True)
-        previous_y_error = error_y
+        previous_y_error = error_y if abs(cycle.pose.pitch - previous_pitch) < 1 else None
+        if previous_y_error is None:
+            cycle.report("집게 각도 변경 · 새 사진에서 앞뒤 비교 기준 재설정")
     if abs(x-target_x) <= final_x_tolerance and -y_tolerance - FINAL_MARGIN_PX <= error_y <= MAX_SHORT_OF_DEPTH_PX:
         cycle.report(f"앞뒤 잔여 오차 {error_y:+.1f} px · 최종 허용 범위")
         return

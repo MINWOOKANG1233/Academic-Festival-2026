@@ -32,9 +32,10 @@ def require_hover_range(target: Point) -> None:
         raise ValueError(f"이동 범위 밖: 수평 반경 {radius:.1f} mm, 현재 시험 한계 {HOVER_RADIUS_MM} mm.")
 
 
-def reset_observation_pose(arm: LeArmSerial) -> dict[int, int]:
+def reset_observation_pose(arm: LeArmSerial, *, check_stop=lambda: None) -> dict[int, int]:
     if arm.inspect() != 2:
         raise ValueError("버스 서보 보드에서만 실행할 수 있습니다.")
+    check_stop()
     arm.write(packet(12))
     time.sleep(3)
     positions = arm.read_positions()
@@ -43,6 +44,7 @@ def reset_observation_pose(arm: LeArmSerial) -> dict[int, int]:
         if not outside:
             break
         if retry_wait == 3:
+            check_stop()
             arm.write(packet(12))
         time.sleep(retry_wait)
         positions = arm.read_positions()
@@ -50,11 +52,13 @@ def reset_observation_pose(arm: LeArmSerial) -> dict[int, int]:
     if outside:
         details = ", ".join(f"{i}번 목표 {HOME_SERVOS[i - 1]} ±10 / 실제 {positions[i]}" for i in outside)
         raise OSError(f"초기화 재시도 후에도 관절이 범위를 벗어났어요 · {details}")
+    check_stop()
     arm.write(gripper(HOME_OPEN_POSITION, duration_ms=1200))
     time.sleep(1.5)
     positions = arm.read_positions()
     if abs(positions[1] - HOME_OPEN_POSITION) > 15:
         raise OSError(f"초기 자세의 집게 열림을 확인하지 못했습니다: {positions[1]}")
+    check_stop()
     return positions
 
 
